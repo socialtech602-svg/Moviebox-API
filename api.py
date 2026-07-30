@@ -1,5 +1,9 @@
 import re
 import json
+import time
+import hmac
+import hashlib
+import base64
 import httpx
 import asyncio
 import logging
@@ -12,8 +16,8 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 app = FastAPI(
     title="MovieBox API Pro",
-    description="Full Pure REST API for moviebox.ph — Zero Scraping",
-    version="2.1.6" # Version bumped
+    description="Full Pure REST API for moviebox.ph — Zero Scraping (Mobile API Bypass)",
+    version="3.0.0" 
 )
 
 app.add_middleware(
@@ -26,32 +30,29 @@ app.add_middleware(
 BASE_URL = "https://moviebox.ph"
 API_BASE = "https://h5-api.aoneroom.com/wefeed-h5api-bff"
 
+# 🔑 The Golden Secret Key extracted via Reverse Engineering (bz.l)
+SECRET_KEY = "76iRl07s0xSN9jqmEWAt79EBJZulIQIsV64FZr2O"
+
 _bearer_token: str | None = None
 
-# Updated to realistic browser headers to bypass 406 WAF blocks
-DEFAULT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Referer": "https://moviebox.ph/",
-    "Origin": "https://moviebox.ph",
-    "X-Client-Info": '{"timezone":"Asia/Dhaka"}',
-    "X-Request-Lang": "en",
+# Mobile App Headers to trick WAF into thinking this is a real Android device
+MOBILE_HEADERS = {
+    "User-Agent": "com.shadow.movie/999 (Linux; U; Android 10; en_IN; M2006C3LII; Build/QP1A.190711.020; Cronet/150.0.7871.114)",
+    "x-play-mode": "2",
+    "x-client-info": '{"package_name":"com.shadow.movie","version_name":"9.9.9","version_code":999,"os":"android","os_version":"10","install_ch":"google-play","device_id":"4b94f894b76e419c6a8850b3e79be70b","install_store":"gp","brand":"Redmi","model":"M2006C3LII","system_language":"en","net":"NETWORK_4G","region":"IN","timezone":"Asia/Kolkata"}',
+    "x-client-status": "1",
     "Accept": "application/json",
-    "Content-Type": "application/json",
-    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-    "sec-fetch-dest": "empty",
-    "sec-fetch-mode": "cors",
-    "sec-fetch-site": "cross-site",
+    "Content-Type": "application/json"
 }
 
+# Browser Headers strictly for the video player domains
 PLAYER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "application/json",
     "Accept-Language": "en-US,en;q=0.9",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
-    "X-Client-Info": '{"timezone":"Asia/Dhaka"}',
+    "X-Client-Info": '{"timezone":"Asia/Kolkata"}',
     "X-Source": "",
     "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
     "sec-ch-ua-mobile": "?0",
@@ -61,14 +62,32 @@ PLAYER_HEADERS = {
     "sec-fetch-site": "same-origin",
 }
 
+def generate_x_tr_signature(payload: dict = None) -> str:
+    """Generate dynamic HmacMD5 signature for API requests."""
+    timestamp = str(int(time.time() * 1000))
+    app_id = "2"
+    
+    # Format payload exactly as Java does
+    body_str = json.dumps(payload, separators=(',', ':')) if payload else ""
+    text_to_hash = f"{timestamp}|{app_id}|{body_str}"
+    
+    h = hmac.new(SECRET_KEY.encode('utf-8'), text_to_hash.encode('utf-8'), hashlib.md5)
+    hash_b64 = base64.b64encode(h.digest()).decode('utf-8')
+    
+    return f"{timestamp}|{app_id}|{hash_b64}"
+
 async def _get_bearer_token() -> str:
     global _bearer_token
     if _bearer_token:
         return _bearer_token
     
     logging.info("Fetching new guest token...")
+    # Token fetch ke liye dynamic signature lagana
+    sig = generate_x_tr_signature()
+    headers = {**MOBILE_HEADERS, "x-tr-signature": sig}
+    
     async with httpx.AsyncClient(follow_redirects=True, timeout=25) as client:
-        resp = await client.get(f"{API_BASE}/home?host=moviebox.ph", headers=DEFAULT_HEADERS)
+        resp = await client.get(f"{API_BASE}/home?host=moviebox.ph", headers=headers)
         x_user = resp.headers.get("x-user")
         if x_user:
             _bearer_token = json.loads(x_user).get("token")
@@ -79,13 +98,17 @@ async def _get_bearer_token() -> str:
                 _bearer_token = m.group(1)
     return _bearer_token or ""
 
-async def _make_request(url: str, method: str = "GET", payload: dict = None, custom_headers: dict = None, retries: int = 1) -> dict:
+async def _make_request(url: str, method: str = "GET", payload: dict = None, retries: int = 1) -> dict:
     global _bearer_token
     token = await _get_bearer_token()
+    
+    # 💥 THE BYPASS MAGIC: Injecting dynamic signature per request 
+    dynamic_sig = generate_x_tr_signature(payload if method == "POST" else None)
+    
     headers = {
-        **DEFAULT_HEADERS,
-        "Authorization": f"Bearer {token}" if token else "",
-        **(custom_headers or {})
+        **MOBILE_HEADERS,
+        "x-tr-signature": dynamic_sig,
+        "Authorization": f"Bearer {token}" if token else ""
     }
     
     async with httpx.AsyncClient(follow_redirects=True, timeout=25) as client:
@@ -101,11 +124,10 @@ async def _make_request(url: str, method: str = "GET", payload: dict = None, cus
                 if new_token:
                     _bearer_token = new_token
 
-            # Auto-Retry logic for expired token or WAF blocks
             if resp.status_code in [401, 403, 406] and retries > 0:
                 logging.warning(f"Received {resp.status_code} on {url}. Clearing token and retrying...")
                 _bearer_token = None
-                return await _make_request(url, method, payload, custom_headers, retries=retries - 1)
+                return await _make_request(url, method, payload, retries=retries - 1)
 
             if resp.status_code != 200:
                 logging.error(f"Upstream Error {resp.status_code}: {resp.text}")
@@ -119,13 +141,268 @@ async def _make_request(url: str, method: str = "GET", payload: dict = None, cus
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "message": "MovieBox Pro API is running"}
+    return {"status": "healthy", "message": "MovieBox Pro API is running with HmacMD5 Signature Bypass"}
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    # Aapka dashboard HTML code same rahega, maine isko skip nahi kiya hai par jagah bachane ke liye assume kiya hai yahan hai.
-    # Same HTML string from your original code goes here.
-    return HTMLResponse(content="<h1>API Dashboard Active</h1><p>Visit /health to check status.</p>")
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>MovieBox Pure API | Pro Dashboard</title>
+        <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+        <style>
+            :root {
+                --primary: #ff3d71;
+                --secondary: #3366ff;
+                --accent: #00f2ff;
+                --bg: #07080c;
+                --card-bg: rgba(255, 255, 255, 0.03);
+                --glass: rgba(255, 255, 255, 0.06);
+                --text: #ffffff;
+            }
+
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            
+            body {
+                font-family: 'Outfit', sans-serif;
+                background: var(--bg);
+                color: var(--text);
+                overflow-x: hidden;
+                min-height: 100vh;
+                background-image: 
+                    radial-gradient(circle at 10% 10%, rgba(255, 61, 113, 0.12) 0%, transparent 40%),
+                    radial-gradient(circle at 90% 90%, rgba(51, 102, 255, 0.12) 0%, transparent 40%);
+            }
+
+            .container {
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 60px 24px;
+                position: relative;
+            }
+
+            header {
+                text-align: center;
+                margin-bottom: 80px;
+                animation: fadeInDown 1s ease-out;
+            }
+
+            @keyframes fadeInDown {
+                from { opacity: 0; transform: translateY(-30px); }
+                to { opacity: 1; transform: translateY(0); }
+            }
+
+            h1 {
+                font-size: clamp(2.5rem, 8vw, 4rem);
+                font-weight: 800;
+                background: linear-gradient(135deg, #fff 0%, #aaa 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                margin-bottom: 15px;
+                letter-spacing: -2px;
+            }
+
+            .badge {
+                background: linear-gradient(90deg, var(--primary), var(--secondary));
+                padding: 8px 18px;
+                border-radius: 40px;
+                font-size: 0.85rem;
+                font-weight: 700;
+                display: inline-block;
+                margin-bottom: 25px;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                box-shadow: 0 10px 30px rgba(255, 61, 113, 0.3);
+            }
+
+            .grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+                gap: 30px;
+                margin-top: 20px;
+            }
+
+            .card {
+                background: var(--card-bg);
+                border: 1px solid var(--glass);
+                border-radius: 28px;
+                padding: 35px;
+                transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+                backdrop-filter: blur(12px);
+                position: relative;
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
+            }
+
+            @media (hover: hover) {
+                .card:hover {
+                    transform: translateY(-12px) scale(1.02);
+                    border-color: rgba(255,255,255,0.2);
+                    box-shadow: 0 30px 60px rgba(0,0,0,0.5);
+                }
+            }
+
+            .card-title {
+                font-size: 1.5rem;
+                font-weight: 700;
+                margin-bottom: 18px;
+                display: flex;
+                align-items: center;
+                gap: 12px;
+            }
+
+            .card-title i {
+                width: 32px; height: 32px;
+                background: rgba(255,255,255,0.05);
+                border-radius: 8px;
+                display: flex; align-items: center; justify-content: center;
+                font-size: 1rem; color: var(--accent);
+                font-style: normal;
+            }
+
+            .card-desc {
+                color: #9ea3ac;
+                font-size: 1rem;
+                line-height: 1.6;
+                margin-bottom: 25px;
+                flex-grow: 1;
+            }
+
+            .endpoint {
+                font-family: 'JetBrains Mono', monospace;
+                background: rgba(0,0,0,0.4);
+                padding: 14px;
+                border-radius: 14px;
+                font-size: 0.85rem;
+                color: var(--accent);
+                border: 1px solid rgba(0,242,255,0.15);
+                margin-bottom: 25px;
+                word-break: break-all;
+                position: relative;
+            }
+
+            .endpoint::after {
+                content: 'GET';
+                position: absolute;
+                right: 14px; top: 14px;
+                font-size: 0.65rem; font-weight: 800;
+                color: rgba(255,255,255,0.3);
+            }
+
+            .btn {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 16px;
+                background: #ffffff;
+                color: #000000;
+                text-decoration: none;
+                border-radius: 16px;
+                font-weight: 700;
+                font-size: 0.95rem;
+                transition: all 0.3s;
+            }
+
+            .btn:hover {
+                background: var(--primary);
+                color: #fff;
+                transform: translateY(-2px);
+                box-shadow: 0 10px 25px rgba(255, 61, 113, 0.4);
+            }
+
+            footer {
+                text-align: center;
+                padding: 80px 0 40px;
+                animation: fadeIn 2s ease;
+            }
+
+            @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+            .dev-tag {
+                font-weight: 800;
+                color: #666;
+                letter-spacing: 3px;
+                text-transform: uppercase;
+                font-size: 0.75rem;
+                border: 1px solid #222;
+                padding: 12px 30px;
+                border-radius: 50px;
+                display: inline-block;
+                background: rgba(255,255,255,0.01);
+                transition: all 0.3s;
+            }
+
+            .dev-tag:hover {
+                color: var(--text);
+                border-color: var(--primary);
+                letter-spacing: 5px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <div class="badge">Enterprise API Solution v3.0</div>
+                <h1>MovieBox Pro</h1>
+                <p style="color: #667; font-size: 1.25rem; font-weight: 300;">WAF Bypass Active (HmacMD5 Signature)</p>
+            </header>
+
+            <div class="grid">
+                <div class="card">
+                    <div class="card-title"><i>🏠</i> Discover Home</div>
+                    <p class="card-desc">The ultimate window into MovieBox. Headlines, recommended content, and trending blocks updated in real-time.</p>
+                    <div class="endpoint">/home</div>
+                    <a href="/home" target="_blank" class="btn">Launch API</a>
+                </div>
+
+                <div class="card">
+                    <div class="card-title"><i>🔍</i> Smart Search</div>
+                    <p class="card-desc">High-precision search engine results. Returns titles, posters, and slugs for lightning-fast matching.</p>
+                    <div class="endpoint">/search?q=Attack on Titan</div>
+                    <a href="/search?q=Attack on Titan" target="_blank" class="btn">Test Search</a>
+                </div>
+
+                <div class="card">
+                    <div class="card-title"><i>🆔</i> Metadata A-Z</div>
+                    <p class="card-desc">Deep-dive into any subject. Episodes, seasons, languages, and full high-resolution metadata trees.</p>
+                    <div class="endpoint">/detail/attack-on-titan-hindi-kGWQOIx0d4</div>
+                    <a href="/detail/attack-on-titan-hindi-kGWQOIx0d4" target="_blank" class="btn">Fetch Specs</a>
+                </div>
+
+                <div class="card">
+                    <div class="card-title"><i>🎬</i> Stream Engine</div>
+                    <p class="card-desc">Dynamic domain discovery and direct MP4 extraction. Supports multiple resolutions and qualities.</p>
+                    <div class="endpoint">/api/stream/{subject_id}</div>
+                    <a href="/api/stream/56988683026712168?detail_path=attack-on-titan-hindi-kGWQOIx0d4" target="_blank" class="btn">Get Player Link</a>
+                </div>
+
+                <div class="card">
+                    <div class="card-title"><i>📦</i> Catalog Filters</div>
+                    <p class="card-desc">Paginated collections for all genres. Movies, TV shows, and Animations filtered by professional criteria.</p>
+                    <div class="endpoint">/tv-series?page=2</div>
+                    <a href="/tv-series?page=2" target="_blank" class="btn">Test Page 2</a>
+                </div>
+
+                <div class="card">
+                    <div class="card-title"><i>💬</i> Subtitle Suite</div>
+                    <p class="card-desc">Access to the complete SRT/VTT global database for all streaming subjects.</p>
+                    <div class="endpoint">/api/stream/{id}/captions</div>
+                    <a href="/api/stream/6207982430134357800/captions?detail_path=breaking-bad-ej6Bp0MCAo7" target="_blank" class="btn">Retrive Subs</a>
+                </div>
+            </div>
+
+            <footer>
+                <div class="dev-tag">Developer: Walter / Modified by Arpit</div>
+            </footer>
+        </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
 @app.get("/home")
 async def get_home():
@@ -235,8 +512,9 @@ async def get_stream_sources(subject_id: str, detail_path: str, se: int = 1, ep:
     )
     play_url = f"{domain}/wefeed-h5api-bff/subject/play?subjectId={subject_id}&se={se}&ep={ep}&detailPath={detail_path}"
 
-    # FIX: Extract token and pass it inside stream headers
     token = await _get_bearer_token()
+    
+    # Using specific PLAYER headers for streaming because it targets the video endpoint, not the core API
     stream_headers = {
         **PLAYER_HEADERS, 
         "Referer": player_referer,
@@ -285,7 +563,6 @@ async def get_captions(subject_id: str, detail_path: str, se: int = 1, ep: int =
     )
     play_url = f"{domain}/wefeed-h5api-bff/subject/play?subjectId={subject_id}&se={se}&ep={ep}&detailPath={detail_path}"
 
-    # FIX: Extract token and pass it inside stream headers for captions check too
     token = await _get_bearer_token()
     stream_headers = {
         **PLAYER_HEADERS, 
@@ -316,7 +593,7 @@ async def get_captions(subject_id: str, detail_path: str, se: int = 1, ep: int =
         f"{API_BASE}/subject/caption"
         f"?format={stream_format}&id={stream_id}&subjectId={subject_id}&detailPath={detail_path}"
     )
-    # _make_request automatically handles token here
+    
     data = await _make_request(cap_url)
     inner = data.get("data", {})
     captions = inner.get("captions", []) if isinstance(inner, dict) else inner
