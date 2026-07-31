@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 app = FastAPI(
     title="MovieBox API Pro",
-    description="Full Pure REST API for moviebox.ph — Zero Scraping (Mobile API Bypass)",
+    description="Full Pure REST API for movieboxonline.net — Zero Scraping (Mobile API Bypass)",
     version="3.0.0" 
 )
 
@@ -27,7 +27,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-BASE_URL = "https://moviebox.ph"
+BASE_URL = "https://movieboxonline.net"
 API_BASE = "https://h5-api.aoneroom.com/wefeed-h5api-bff"
 
 # 🔑 The Golden Secret Key extracted via Reverse Engineering (bz.l)
@@ -87,7 +87,7 @@ async def _get_bearer_token() -> str:
     headers = {**MOBILE_HEADERS, "x-tr-signature": sig}
     
     async with httpx.AsyncClient(follow_redirects=True, timeout=25) as client:
-        resp = await client.get(f"{API_BASE}/home?host=moviebox.ph", headers=headers)
+        resp = await client.get(f"{API_BASE}/home?host=movieboxonline.net", headers=headers)
         x_user = resp.headers.get("x-user")
         if x_user:
             _bearer_token = json.loads(x_user).get("token")
@@ -406,7 +406,7 @@ async def dashboard():
 
 @app.get("/home")
 async def get_home():
-    url = f"{API_BASE}/home?host=moviebox.ph"
+    url = f"{API_BASE}/home?host=movieboxonline.net"
     data = await _make_request(url)
     sections = []
     for op in data.get("data", {}).get("operatingList", []) or []:

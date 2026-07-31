@@ -6,10 +6,10 @@
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=for-the-badge&logo=fastapi)](https://fastapi.tiangolo.com/)
 [![Python](https://img.shields.io/badge/Python-3.9+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
-[![Status](https://img.shields.io/badge/Status-Live-4c1?style=for-the-badge)](https://moviebox.ph)
+[![Status](https://img.shields.io/badge/Status-Live-4c1?style=for-the-badge)](https://movieboxonline.net)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 
-> **The ultimate REST API for MovieBox.ph.** 🚀 Optimized for high-speed metadata scraping, real-time stream extraction, and seamless frontend integration.
+> **The ultimate REST API for movieboxonline.net.** 🚀 Optimized for high-speed metadata scraping, real-time stream extraction, and seamless frontend integration.
 
 ---
 
